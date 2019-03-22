@@ -7,6 +7,7 @@
 //
 
 import AVFoundation
+import Cache
 
 // MARK: - FRadioPlayingState
 
@@ -204,8 +205,12 @@ open class FRadioPlayer: NSObject {
     /// Check for headphones, used to handle audio route change
     private var headphonesConnected: Bool = false
     
+    /// Show buffering using CachingDelegate
+    /// Save even partial content until app closes or memory request
+    /// Save full content (obv) until it is listened to
+    /// playerItem polymorphism between regular AVPlayerItem and Caching (or make caching able to behave exactly like AVPI, for live listening)
     /// Default player item
-    private var playerItem: AVPlayerItem? {
+    private var playerItem: CachingPlayerItem? {
         didSet {
             playerItemDidChange()
         }
@@ -217,26 +222,36 @@ open class FRadioPlayer: NSObject {
     /// Current network connectivity
     private var isConnected = false
     
+    /// Cache configuration
+    let diskConfig = DiskConfig(name: "DiskCache")
+    let memoryConfig = MemoryConfig(expiry: .never, countLimit: 10, totalCostLimit: 10)
+    let dataTransformer = TransformerFactory.forData()
+    
+    lazy var storage: Cache.Storage? = {
+        return try? Cache.Storage(diskConfig: diskConfig, memoryConfig: memoryConfig, transformer: dataTransformer)
+    }()
+    
+    
     // MARK: - Initialization
     
     private override init() {
         super.init()
-
+        
         #if !os(macOS)
         let options: AVAudioSession.CategoryOptions
-
+        
         // Enable bluetooth playback
         #if os(iOS)
         options = [.defaultToSpeaker, .allowBluetooth]
         #else
         options = []
         #endif
-
+        
         // Start audio session
         let audioSession = AVAudioSession.sharedInstance()
         try? audioSession.setCategory(AVAudioSession.Category.playback, mode: AVAudioSession.Mode.default, options: options)
         #endif
-
+        
         // Notifications
         setupNotifications()
         
@@ -244,7 +259,7 @@ open class FRadioPlayer: NSObject {
         #if os(iOS)
         checkHeadphonesConnection(outputs: AVAudioSession.sharedInstance().currentRoute.outputs)
         #endif
-
+        
         // Reachability config
         try? reachability.startNotifier()
         NotificationCenter.default.addObserver(self, selector: #selector(reachabilityChanged(note:)), name: .reachabilityChanged, object: reachability)
@@ -319,7 +334,7 @@ open class FRadioPlayer: NSObject {
             player = AVPlayer()
         }
         
-        playerItem = AVPlayerItem(asset: asset)
+        playerItem = CachingPlayerItem(asset: asset)
     }
     
     /** Reset all player item observers and create new ones
@@ -403,7 +418,7 @@ open class FRadioPlayer: NSObject {
             }
         })
     }
-
+    
     private func reloadItem() {
         player?.replaceCurrentItem(with: nil)
         player?.replaceCurrentItem(with: playerItem)
@@ -490,7 +505,7 @@ open class FRadioPlayer: NSObject {
     }
     
     @objc private func handleRouteChange(notification: Notification) {
-
+        
         guard let userInfo = notification.userInfo,
             let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
             let reason = AVAudioSession.RouteChangeReason(rawValue:reasonValue) else { return }
@@ -533,7 +548,7 @@ open class FRadioPlayer: NSObject {
             case "playbackLikelyToKeepUp":
                 
                 self.state = item.isPlaybackLikelyToKeepUp ? .loadingFinished : .loading
-
+                
             case "timedMetadata":
                 let rawValue = item.timedMetadata?.first?.value as? String
                 timedMetadataDidChange(rawValue: rawValue)
@@ -544,3 +559,4 @@ open class FRadioPlayer: NSObject {
         }
     }
 }
+
