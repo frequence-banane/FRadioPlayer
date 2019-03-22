@@ -8,7 +8,7 @@
 
 Pod::Spec.new do |s|
   s.name             = 'FRadioPlayer'
-  s.version          = '0.1.15'
+  s.version          = '0.2.0'
   s.summary          = 'A radio player for iOS/macOS/tvOS'
 
 # This description is used to generate tags and improve search results.
@@ -40,5 +40,5 @@ FRadioPlayer is a wrapper around AVPlayer to handle internet radio playback.
 
   # s.public_header_files = 'Pod/Classes/**/*.h'
   # s.frameworks = 'UIKit', 'MapKit'
-  # s.dependency 'AFNetworking', '~> 2.3'
+  s.dependency 'Cache', '~> 5.2.0'
 end
