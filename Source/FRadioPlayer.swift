@@ -191,6 +191,8 @@ open class FRadioPlayer: NSObject {
         didSet {
             guard oldValue != playbackState else { return }
             delegate?.radioPlayer(self, playbackStateDidChange: playbackState)
+            let activeState = (playbackState == FRadioPlaybackState.playing) ? true : false
+            try? audioSession?.setActive(activeState, options: AVAudioSession.SetActiveOptions.notifyOthersOnDeactivation)
         }
     }
     
@@ -205,12 +207,15 @@ open class FRadioPlayer: NSObject {
     /// Check for headphones, used to handle audio route change
     private var headphonesConnected: Bool = false
     
+    /// Seize and release explicit control of audio output
+    private var audioSession : AVAudioSession?
+    
     /// Show buffering using CachingDelegate
     /// Save even partial content until app closes or memory request
     /// Save full content (obv) until it is listened to
     /// playerItem polymorphism between regular AVPlayerItem and Caching (or make caching able to behave exactly like AVPI, for live listening)
     /// Default player item
-    private var playerItem: CachingPlayerItem? {
+    private var playerItem: /*CachingPlayerItem*/AVPlayerItem? {
         didSet {
             playerItemDidChange()
         }
@@ -248,8 +253,8 @@ open class FRadioPlayer: NSObject {
         #endif
         
         // Start audio session
-        let audioSession = AVAudioSession.sharedInstance()
-        try? audioSession.setCategory(AVAudioSession.Category.playback, mode: AVAudioSession.Mode.default, options: options)
+        audioSession = AVAudioSession.sharedInstance()
+        try? audioSession!.setCategory(AVAudioSession.Category.playback, mode: AVAudioSession.Mode.default, options: options)
         #endif
         
         // Notifications
@@ -334,7 +339,7 @@ open class FRadioPlayer: NSObject {
             player = AVPlayer()
         }
         
-        playerItem = CachingPlayerItem(asset: asset)
+        playerItem = AVPlayerItem(asset: asset)//CachingPlayerItem(asset: asset)
     }
     
     /** Reset all player item observers and create new ones
