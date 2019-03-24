@@ -2,7 +2,8 @@
 //  CachingPlayerItem.swift
 //  
 //
-//  Copyright Nikita <neekeetab> Belousov
+//  Copyright Nikita Belousov
+//  Portions Copyright Perceval FARAMAZ
 //
 //  Fetched from http://github.com/neekeetab/CachingPlayerItem on 21.03.19
 
@@ -19,178 +20,194 @@ fileprivate extension URL {
     
 }
 
-@objc protocol CachingPlayerItemDelegate {
+internal protocol CachingPlayerItemDelegate : class {
     
     /// Is called when the media file is fully downloaded.
-    @objc optional func playerItem(_ playerItem: CachingPlayerItem, didFinishDownloadingData data: Data)
+    func playerItem(_ playerItem: CachingPlayerItem, didFinishDownloadingData data: Data)
     
     /// Is called every time a new portion of data is received.
-    @objc optional func playerItem(_ playerItem: CachingPlayerItem, didDownloadBytesSoFar bytesDownloaded: Int, outOf bytesExpected: Int)
+    func playerItem(_ playerItem: CachingPlayerItem, didDownloadBytesSoFar bytesDownloaded: Int, outOf bytesExpected: Int)
     
     /// Is called after initial prebuffering is finished, means
     /// we are ready to play.
-    @objc optional func playerItemStatusChanged(_ playerItem: CachingPlayerItem)
+    func playerItemStatusChanged(_ playerItem: CachingPlayerItem)
     
     /// Is called when the data being downloaded did not arrive in time to
     /// continue playback.
-    @objc optional func playerItemPlaybackStalled(_ playerItem: CachingPlayerItem)
+    func playerItemPlaybackStalled(_ playerItem: CachingPlayerItem)
     
     /// Is called when the buffer has been totally read.
-    @objc optional func playerItemBufferEmpty(_ playerItem: CachingPlayerItem)
+    func playerItemBufferEmpty(_ playerItem: CachingPlayerItem)
     
     /// Is called when likelihood of being able to keep playing without
     /// interruption has changed.
-    @objc optional func playerItem(_ playerItem: CachingPlayerItem, isPlaybackLikelyToKeepUp: Bool)
+    func playerItem(_ playerItem: CachingPlayerItem, isPlaybackLikelyToKeepUp: Bool)
     
     /// Is called when the timed metadata has been updated.
-    @objc optional func playerItemTimedMetadataUpdated(_ playerItem: CachingPlayerItem)
+    func playerItemTimedMetadataUpdated(_ playerItem: CachingPlayerItem)
     
     /// Is called when the player item has reached the end of its asset.
-    @objc optional func playerItemDidPlayToEndTime(_ playerItem: CachingPlayerItem)
+    func playerItemDidPlayToEndTime(_ playerItem: CachingPlayerItem)
     
     /// Is called on downloading error.
-    @objc optional func playerItem(_ playerItem: CachingPlayerItem, downloadingFailedWith error: Error)
+    func playerItem(_ playerItem: CachingPlayerItem, downloadingFailedWith error: Error)
+    
+}
+
+internal extension CachingPlayerItemDelegate {
+    func playerItem(_ playerItem: CachingPlayerItem, didFinishDownloadingData data: Data) {}
+    func playerItem(_ playerItem: CachingPlayerItem, didDownloadBytesSoFar bytesDownloaded: Int, outOf bytesExpected: Int) {}
+    func playerItemStatusChanged(_ playerItem: CachingPlayerItem) {}
+    func playerItemPlaybackStalled(_ playerItem: CachingPlayerItem) {}
+    func playerItemBufferEmpty(_ playerItem: CachingPlayerItem) {}
+    func playerItem(_ playerItem: CachingPlayerItem, isPlaybackLikelyToKeepUp: Bool) {}
+    func playerItemTimedMetadataUpdated(_ playerItem: CachingPlayerItem) {}
+    func playerItemDidPlayToEndTime(_ playerItem: CachingPlayerItem) {}
+    func playerItem(_ playerItem: CachingPlayerItem, downloadingFailedWith error: Error) {}
+}
+
+class CachingURLAsset: AVURLAsset {
+    var isLive = false
+}
+
+class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URLSessionDelegate, URLSessionDataDelegate, URLSessionTaskDelegate {
+    
+    var playingFromData = false
+    var mimeType: String? // is required when playing from Data
+    var session: URLSession?
+    var mediaData: Data?
+    var response: URLResponse?
+    var pendingRequests = Set<AVAssetResourceLoadingRequest>()
+    weak var owner: CachingPlayerItem?
+    
+    func resourceLoader(_ resourceLoader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
+        
+        if playingFromData {
+            
+            // Nothing to load.
+            
+        } else if session == nil {
+            
+            // If we're playing from a url, we need to download the file.
+            // We start loading the file on first request only.
+            guard let initialUrl = owner?.url else {
+                fatalError("internal inconsistency")
+            }
+            
+            startDataRequest(with: initialUrl)
+        }
+        
+        pendingRequests.insert(loadingRequest)
+        processPendingRequests()
+        return true
+        
+    }
+    
+    func startDataRequest(with url: URL) {
+        let configuration = URLSessionConfiguration.default
+        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        session?.dataTask(with: url).resume()
+    }
+    
+    func resourceLoader(_ resourceLoader: AVAssetResourceLoader, didCancel loadingRequest: AVAssetResourceLoadingRequest) {
+        pendingRequests.remove(loadingRequest)
+    }
+    
+    // MARK: URLSession delegate
+    
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        mediaData?.append(data)
+        processPendingRequests()
+        owner?.delegate?.playerItem(owner!, didDownloadBytesSoFar: mediaData!.count, outOf: Int(dataTask.countOfBytesExpectedToReceive))
+    }
+    
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        completionHandler(Foundation.URLSession.ResponseDisposition.allow)
+        mediaData = Data()
+        self.response = response
+        processPendingRequests()
+    }
+    
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let errorUnwrapped = error {
+            owner?.delegate?.playerItem(owner!, downloadingFailedWith: errorUnwrapped)
+            return
+        }
+        processPendingRequests()
+        owner?.delegate?.playerItem(owner!, didFinishDownloadingData: mediaData!)
+    }
+    
+    // MARK: -
+    
+    func processPendingRequests() {
+        
+        // get all fullfilled requests
+        let requestsFulfilled = Set<AVAssetResourceLoadingRequest>(pendingRequests.compactMap {
+            self.fillInContentInformationRequest($0.contentInformationRequest)
+            if self.haveEnoughDataToFulfillRequest($0.dataRequest!) {
+                $0.finishLoading()
+                return $0
+            }
+            return nil
+        })
+        
+        // remove fulfilled requests from pending requests
+        _ = requestsFulfilled.map { self.pendingRequests.remove($0) }
+        
+    }
+    
+    func fillInContentInformationRequest(_ contentInformationRequest: AVAssetResourceLoadingContentInformationRequest?) {
+        
+        // if we play from Data we make no url requests, therefore we have no responses, so we need to fill in contentInformationRequest manually
+        if playingFromData {
+            contentInformationRequest?.contentType = self.mimeType
+            contentInformationRequest?.contentLength = Int64(mediaData!.count)
+            contentInformationRequest?.isByteRangeAccessSupported = true
+            return
+        }
+        
+        guard let responseUnwrapped = response else {
+            // have no response from the server yet
+            return
+        }
+        
+        contentInformationRequest?.contentType = responseUnwrapped.mimeType
+        contentInformationRequest?.contentLength = responseUnwrapped.expectedContentLength
+        contentInformationRequest?.isByteRangeAccessSupported = true
+        
+    }
+    
+    func haveEnoughDataToFulfillRequest(_ dataRequest: AVAssetResourceLoadingDataRequest) -> Bool {
+        
+        let requestedOffset = Int(dataRequest.requestedOffset)
+        let requestedLength = dataRequest.requestedLength
+        let currentOffset = Int(dataRequest.currentOffset)
+        
+        guard let songDataUnwrapped = mediaData,
+            songDataUnwrapped.count > currentOffset else {
+                // Don't have any data at all for this request.
+                return false
+        }
+        
+        let bytesToRespond = min(songDataUnwrapped.count - currentOffset, requestedLength)
+        let dataToRespond = songDataUnwrapped.subdata(in: Range(uncheckedBounds: (currentOffset, currentOffset + bytesToRespond)))
+        dataRequest.respond(with: dataToRespond)
+        
+        return songDataUnwrapped.count >= requestedLength + requestedOffset
+        
+    }
+    
+    deinit {
+        session?.invalidateAndCancel()
+    }
     
 }
 
 open class CachingPlayerItem: AVPlayerItem {
     
-    class ResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URLSessionDelegate, URLSessionDataDelegate, URLSessionTaskDelegate {
-        
-        var playingFromData = false
-        var mimeType: String? // is required when playing from Data
-        var session: URLSession?
-        var mediaData: Data?
-        var response: URLResponse?
-        var pendingRequests = Set<AVAssetResourceLoadingRequest>()
-        weak var owner: CachingPlayerItem?
-        
-        func resourceLoader(_ resourceLoader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
-            
-            if playingFromData {
-                
-                // Nothing to load.
-                
-            } else if session == nil {
-                
-                // If we're playing from a url, we need to download the file.
-                // We start loading the file on first request only.
-                guard let initialUrl = owner?.url else {
-                    fatalError("internal inconsistency")
-                }
-                
-                startDataRequest(with: initialUrl)
-            }
-            
-            pendingRequests.insert(loadingRequest)
-            processPendingRequests()
-            return true
-            
-        }
-        
-        func startDataRequest(with url: URL) {
-            let configuration = URLSessionConfiguration.default
-            configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-            session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
-            session?.dataTask(with: url).resume()
-        }
-        
-        func resourceLoader(_ resourceLoader: AVAssetResourceLoader, didCancel loadingRequest: AVAssetResourceLoadingRequest) {
-            pendingRequests.remove(loadingRequest)
-        }
-        
-        // MARK: URLSession delegate
-        
-        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-            mediaData?.append(data)
-            processPendingRequests()
-            owner?.delegate?.playerItem?(owner!, didDownloadBytesSoFar: mediaData!.count, outOf: Int(dataTask.countOfBytesExpectedToReceive))
-        }
-        
-        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-            completionHandler(Foundation.URLSession.ResponseDisposition.allow)
-            mediaData = Data()
-            self.response = response
-            processPendingRequests()
-        }
-        
-        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-            if let errorUnwrapped = error {
-                owner?.delegate?.playerItem?(owner!, downloadingFailedWith: errorUnwrapped)
-                return
-            }
-            processPendingRequests()
-            owner?.delegate?.playerItem?(owner!, didFinishDownloadingData: mediaData!)
-        }
-        
-        // MARK: -
-        
-        func processPendingRequests() {
-            
-            // get all fullfilled requests
-            let requestsFulfilled = Set<AVAssetResourceLoadingRequest>(pendingRequests.compactMap {
-                self.fillInContentInformationRequest($0.contentInformationRequest)
-                if self.haveEnoughDataToFulfillRequest($0.dataRequest!) {
-                    $0.finishLoading()
-                    return $0
-                }
-                return nil
-            })
-            
-            // remove fulfilled requests from pending requests
-            _ = requestsFulfilled.map { self.pendingRequests.remove($0) }
-            
-        }
-        
-        func fillInContentInformationRequest(_ contentInformationRequest: AVAssetResourceLoadingContentInformationRequest?) {
-            
-            // if we play from Data we make no url requests, therefore we have no responses, so we need to fill in contentInformationRequest manually
-            if playingFromData {
-                contentInformationRequest?.contentType = self.mimeType
-                contentInformationRequest?.contentLength = Int64(mediaData!.count)
-                contentInformationRequest?.isByteRangeAccessSupported = true
-                return
-            }
-            
-            guard let responseUnwrapped = response else {
-                // have no response from the server yet
-                return
-            }
-            
-            contentInformationRequest?.contentType = responseUnwrapped.mimeType
-            contentInformationRequest?.contentLength = responseUnwrapped.expectedContentLength
-            contentInformationRequest?.isByteRangeAccessSupported = true
-            
-        }
-        
-        func haveEnoughDataToFulfillRequest(_ dataRequest: AVAssetResourceLoadingDataRequest) -> Bool {
-            
-            let requestedOffset = Int(dataRequest.requestedOffset)
-            let requestedLength = dataRequest.requestedLength
-            let currentOffset = Int(dataRequest.currentOffset)
-            
-            guard let songDataUnwrapped = mediaData,
-                songDataUnwrapped.count > currentOffset else {
-                    // Don't have any data at all for this request.
-                    return false
-            }
-            
-            let bytesToRespond = min(songDataUnwrapped.count - currentOffset, requestedLength)
-            let dataToRespond = songDataUnwrapped.subdata(in: Range(uncheckedBounds: (currentOffset, currentOffset + bytesToRespond)))
-            dataRequest.respond(with: dataToRespond)
-            
-            return songDataUnwrapped.count >= requestedLength + requestedOffset
-            
-        }
-        
-        deinit {
-            session?.invalidateAndCancel()
-        }
-        
-    }
-    
     fileprivate let resourceLoaderDelegate = ResourceLoaderDelegate()
-    fileprivate let url: URL
+    internal let url: URL
     fileprivate let initialScheme: String?
     fileprivate var customFileExtension: String?
     
@@ -202,20 +219,56 @@ open class CachingPlayerItem: AVPlayerItem {
         }
     }
     
-    private let cachingPlayerItemScheme = "cachingPlayerItemScheme"
+    internal static let cachingPlayerItemScheme = "cachingPlayerItemScheme"
     
-    /// Is used for playing remote files.
-    convenience init(url: URL) {
-        self.init(url: url, customFileExtension: nil)
+    
+    override init(asset: AVAsset, automaticallyLoadedAssetKeys: [String]?) {
+        guard var urlAsset = asset as? CachingURLAsset else { fatalError("Not a CachingURLAsset") }
+        let url = urlAsset.url
+        
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+            let scheme = components.scheme else {
+                fatalError("Urls without a scheme are not supported")
+        }
+        
+        self.url = urlAsset.url
+        self.initialScheme = scheme
+        
+        if !urlAsset.isLive {
+            guard var urlWithCustomScheme = url.withScheme(CachingPlayerItem.cachingPlayerItemScheme) else {
+                fatalError("Urls without a scheme are not supported")
+            }
+            
+            if let ext = customFileExtension {
+                urlWithCustomScheme.deletePathExtension()
+                urlWithCustomScheme.appendPathExtension(ext)
+                self.customFileExtension = ext
+            }
+            
+            urlAsset = CachingURLAsset(url: urlWithCustomScheme)
+            urlAsset.resourceLoader.setDelegate(resourceLoaderDelegate, queue: DispatchQueue.main)
+        }
+        
+        super.init(asset: urlAsset, automaticallyLoadedAssetKeys: automaticallyLoadedAssetKeys)
+        
+        resourceLoaderDelegate.owner = self
+        
+        registerObservers()
     }
     
-    /// Override/append custom file extension to URL path.
+    convenience init(url URL: URL, automaticallyLoadedAssetKeys: [String]?, isLive: Bool) {
+        let asset = CachingURLAsset(url: URL)
+        asset.isLive = isLive
+        self.init(asset: asset, automaticallyLoadedAssetKeys: automaticallyLoadedAssetKeys)
+    }
+    
+    /*/// Override/append custom file extension to URL path.
     /// This is required for the player to work correctly with the intended file type.
     init(url: URL, customFileExtension: String?) {
         
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
             let scheme = components.scheme,
-            var urlWithCustomScheme = url.withScheme(cachingPlayerItemScheme) else {
+            var urlWithCustomScheme = url.withScheme(CachingPlayerItem.cachingPlayerItemScheme) else {
                 fatalError("Urls without a scheme are not supported")
         }
         
@@ -228,7 +281,7 @@ open class CachingPlayerItem: AVPlayerItem {
             self.customFileExtension = ext
         }
         
-        let asset = AVURLAsset(url: urlWithCustomScheme)
+        let asset = CachingURLAsset(url: urlWithCustomScheme)
         asset.resourceLoader.setDelegate(resourceLoaderDelegate, queue: DispatchQueue.main)
         super.init(asset: asset, automaticallyLoadedAssetKeys: nil)
         
@@ -236,12 +289,11 @@ open class CachingPlayerItem: AVPlayerItem {
         
         registerObservers()
         
-    }
+    }*/
     
     /// Is used for playing from Data.
     init(data: Data, mimeType: String, fileExtension: String) {
-        
-        guard let fakeUrl = URL(string: cachingPlayerItemScheme + "://whatever/file.\(fileExtension)") else {
+        guard let fakeUrl = URL(string: CachingPlayerItem.cachingPlayerItemScheme + "://whatever/file.\(fileExtension)") else {
             fatalError("internal inconsistency")
         }
         
@@ -252,7 +304,7 @@ open class CachingPlayerItem: AVPlayerItem {
         resourceLoaderDelegate.playingFromData = true
         resourceLoaderDelegate.mimeType = mimeType
         
-        let asset = AVURLAsset(url: fakeUrl)
+        let asset = CachingURLAsset(url: fakeUrl)
         asset.resourceLoader.setDelegate(resourceLoaderDelegate, queue: DispatchQueue.main)
         super.init(asset: asset, automaticallyLoadedAssetKeys: nil)
         resourceLoaderDelegate.owner = self
@@ -280,16 +332,16 @@ open class CachingPlayerItem: AVPlayerItem {
             switch keyPath {
                 
             case #keyPath(CachingPlayerItem.status):
-                delegate?.playerItemStatusChanged?(self)
+                delegate?.playerItemStatusChanged(self)
                 
             case #keyPath(CachingPlayerItem.isPlaybackBufferEmpty):
-                delegate?.playerItemBufferEmpty?(self)
+                delegate?.playerItemBufferEmpty(self)
                 
             case #keyPath(CachingPlayerItem.isPlaybackLikelyToKeepUp):
-                delegate?.playerItem?(self, isPlaybackLikelyToKeepUp: self.isPlaybackLikelyToKeepUp)
+                delegate?.playerItem(self, isPlaybackLikelyToKeepUp: self.isPlaybackLikelyToKeepUp)
                 
             case #keyPath(CachingPlayerItem.timedMetadata):
-                delegate?.playerItemTimedMetadataUpdated?(self)
+                delegate?.playerItemTimedMetadataUpdated(self)
                 
             default:
                 break
@@ -305,7 +357,7 @@ open class CachingPlayerItem: AVPlayerItem {
             obj == self
             else { return }
         
-        delegate?.playerItemPlaybackStalled?(self)
+        delegate?.playerItemPlaybackStalled(self)
     }
     
     @objc func playbackDidPlayToEndTime(notification: Notification) {
@@ -314,36 +366,10 @@ open class CachingPlayerItem: AVPlayerItem {
             obj == self
             else { return }
         
-        delegate?.playerItemDidPlayToEndTime?(self)
+        delegate?.playerItemDidPlayToEndTime(self)
     }
     
     // MARK: -
-    
-    override init(asset: AVAsset, automaticallyLoadedAssetKeys: [String]?) {
-        guard let urlAsset = asset as? AVURLAsset else { fatalError("Not a AVURLAsset") }
-        self.url = urlAsset.url
-        
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-            let scheme = components.scheme,
-            var urlWithCustomScheme = url.withScheme(cachingPlayerItemScheme) else {
-                fatalError("Urls without a scheme are not supported")
-        }
-        
-        self.initialScheme = scheme
-        
-        if let ext = customFileExtension {
-            urlWithCustomScheme.deletePathExtension()
-            urlWithCustomScheme.appendPathExtension(ext)
-            self.customFileExtension = ext
-        }
-        
-        urlAsset.resourceLoader.setDelegate(resourceLoaderDelegate, queue: DispatchQueue.main)
-        super.init(asset: asset, automaticallyLoadedAssetKeys: automaticallyLoadedAssetKeys)
-        
-        resourceLoaderDelegate.owner = self
-        
-        registerObservers()
-    }
     
     deinit {
         removeObserver(self, forKeyPath: #keyPath(CachingPlayerItem.status))

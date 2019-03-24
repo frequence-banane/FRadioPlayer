@@ -4,6 +4,7 @@
 //
 //  Created by Fethi El Hassasna on 2017-11-11.
 //  Copyright © 2017 Fethi El Hassasna (@fethica). All rights reserved.
+//  Portions Copyright © 2019 Perceval Faramaz (@perfaram). All rights reserved.
 //
 
 import AVFoundation
@@ -135,6 +136,8 @@ public extension FRadioPlayerDelegate {
     func radioPlayer(_ player: FRadioPlayer, artworkDidChange artworkURL: URL?) {}
 }
 
+
+
 // MARK: - FRadioPlayer
 
 /**
@@ -223,6 +226,11 @@ open class FRadioPlayer: NSObject, CachingPlayerItemDelegate {
     /// playerItem polymorphism between regular AVPlayerItem and Caching (or make caching able to behave exactly like AVPI, for live listening)
     /// Default player item
     private var playerItem: CachingPlayerItem? {
+        willSet {
+            if player == nil {
+                player = AVPlayer()
+            }
+        }
         didSet {
             playerItemDidChange()
         }
@@ -330,49 +338,23 @@ open class FRadioPlayer: NSObject, CachingPlayerItemDelegate {
         
         guard let resource = resource else { state = .urlNotSet; return }
         
-        func loadDistantData(url: URL) {
-            state = .loading
-            preparePlayer(with: AVURLAsset(url: url)) { (success, asset) in
-                guard success, let asset = asset else {
-                    self.resetPlayer()
-                    self.state = .error
-                    return
-                }
-                self.setupPlayer(with: asset)
-            }
-        }
+        state = .loading
         
         switch resource {
         case .staticAsset(let url):
             storage?.async.entry(forKey: url.absoluteString, completion: { result in
                 switch result {
                 case .error: // The track is not cached.
-                    loadDistantData(url: url)
+                    self.playerItem = CachingPlayerItem(url: url, automaticallyLoadedAssetKeys: ["playable"], isLive: false)
                 case .value(let entry): // The track is cached.
-                    self.setupPlayer(withLocal: entry.object, mimeType: "audio/mpeg", fileExtension: "mp3")
+                    self.playerItem = CachingPlayerItem(data: entry.object, mimeType: "audio/mpeg", fileExtension: "mp3")
                 }
             })
             
         case .liveFeed(let url):
-            loadDistantData(url: url)
+            self.playerItem = CachingPlayerItem(url: url, automaticallyLoadedAssetKeys: ["playable"], isLive: true)
             
         }
-    }
-    
-    private func setupPlayer(withLocal data: Data, mimeType: String, fileExtension: String) {
-        if player == nil {
-            player = AVPlayer()
-        }
-        
-        playerItem = CachingPlayerItem(data: data, mimeType: mimeType, fileExtension: fileExtension)
-    }
-    
-    private func setupPlayer(with asset: AVURLAsset) {
-        if player == nil {
-            player = AVPlayer()
-        }
-        
-        playerItem = CachingPlayerItem(asset: asset)
     }
     
     /** Reset all player item observers and create new ones
@@ -400,33 +382,6 @@ open class FRadioPlayer: NSObject, CachingPlayerItemDelegate {
         }
         
         delegate?.radioPlayer(self, itemDidChange: radioResource)
-    }
-    
-    /** Prepare the player from the passed AVURLAsset
-     
-     */
-    private func preparePlayer(with asset: AVURLAsset?, completionHandler: @escaping (_ isPlayable: Bool, _ asset: AVURLAsset?)->()) {
-        guard let asset = asset else {
-            completionHandler(false, nil)
-            return
-        }
-        
-        let requestedKey = ["playable"]
-        
-        asset.loadValuesAsynchronously(forKeys: requestedKey) {
-            
-            DispatchQueue.main.async {
-                var error: NSError?
-                
-                let keyStatus = asset.statusOfValue(forKey: "playable", error: &error)
-                if keyStatus == AVKeyValueStatus.failed || !asset.isPlayable {
-                    completionHandler(false, nil)
-                    return
-                }
-                
-                completionHandler(true, asset)
-            }
-        }
     }
     
     private func timedMetadataDidChange(rawValue: String?) {
@@ -555,7 +510,8 @@ open class FRadioPlayer: NSObject, CachingPlayerItemDelegate {
     
     /// Is called when the media file is fully downloaded.
     func playerItem(_ playerItem: CachingPlayerItem, didFinishDownloadingData data: Data) {
-        
+        // A track is downloaded. Saving it to the cache asynchronously.
+        storage?.async.setObject(data, forKey: playerItem.url.absoluteString, completion: { _ in })
     }
     
     /// Is called every time a new portion of data is received.
@@ -567,6 +523,16 @@ open class FRadioPlayer: NSObject, CachingPlayerItemDelegate {
     /// we are ready to play.
     func playerItemStatusChanged(_ playerItem: CachingPlayerItem) {
         assert(playerItem == self.playerItem)
+        
+        var error: NSError?
+        let asset = playerItem.asset
+        let keyStatus = asset.statusOfValue(forKey: "playable", error: &error)
+        if keyStatus == AVKeyValueStatus.failed || !asset.isPlayable {
+            self.resetPlayer()
+            self.state = .error
+            return
+        }
+        
         if playerItem.status == AVPlayerItem.Status.readyToPlay {
             self.state = .readyToPlay
         } else if playerItem.status == AVPlayerItem.Status.failed {
