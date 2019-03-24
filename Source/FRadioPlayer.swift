@@ -215,7 +215,7 @@ open class FRadioPlayer: NSObject {
     /// Save full content (obv) until it is listened to
     /// playerItem polymorphism between regular AVPlayerItem and Caching (or make caching able to behave exactly like AVPI, for live listening)
     /// Default player item
-    private var playerItem: /*CachingPlayerItem*/AVPlayerItem? {
+    private var playerItem: CachingPlayerItem? {
         didSet {
             playerItemDidChange()
         }
@@ -324,7 +324,7 @@ open class FRadioPlayer: NSObject {
         
         state = .loading
         
-        preparePlayer(with: AVAsset(url: url)) { (success, asset) in
+        preparePlayer(with: AVURLAsset(url: url)) { (success, asset) in
             guard success, let asset = asset else {
                 self.resetPlayer()
                 self.state = .error
@@ -334,12 +334,12 @@ open class FRadioPlayer: NSObject {
         }
     }
     
-    private func setupPlayer(with asset: AVAsset) {
+    private func setupPlayer(with asset: AVURLAsset) {
         if player == nil {
             player = AVPlayer()
         }
         
-        playerItem = AVPlayerItem(asset: asset)//CachingPlayerItem(asset: asset)
+        playerItem = CachingPlayerItem(asset: asset)
     }
     
     /** Reset all player item observers and create new ones
@@ -376,10 +376,10 @@ open class FRadioPlayer: NSObject {
         delegate?.radioPlayer?(self, itemDidChange: radioURL)
     }
     
-    /** Prepare the player from the passed AVAsset
+    /** Prepare the player from the passed AVURLAsset
      
      */
-    private func preparePlayer(with asset: AVAsset?, completionHandler: @escaping (_ isPlayable: Bool, _ asset: AVAsset?)->()) {
+    private func preparePlayer(with asset: AVURLAsset?, completionHandler: @escaping (_ isPlayable: Bool, _ asset: AVURLAsset?)->()) {
         guard let asset = asset else {
             completionHandler(false, nil)
             return

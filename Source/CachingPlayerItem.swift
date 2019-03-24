@@ -267,7 +267,31 @@ open class CachingPlayerItem: AVPlayerItem {
     // MARK: -
     
     override init(asset: AVAsset, automaticallyLoadedAssetKeys: [String]?) {
-        fatalError("not implemented")
+        guard let urlAsset = asset as? AVURLAsset else { fatalError("Not a AVURLAsset") }
+        self.url = urlAsset.url
+        
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+            let scheme = components.scheme,
+            var urlWithCustomScheme = url.withScheme(cachingPlayerItemScheme) else {
+                fatalError("Urls without a scheme are not supported")
+        }
+        
+        self.initialScheme = scheme
+        
+        if let ext = customFileExtension {
+            urlWithCustomScheme.deletePathExtension()
+            urlWithCustomScheme.appendPathExtension(ext)
+            self.customFileExtension = ext
+        }
+        
+        urlAsset.resourceLoader.setDelegate(resourceLoaderDelegate, queue: DispatchQueue.main)
+        super.init(asset: asset, automaticallyLoadedAssetKeys: automaticallyLoadedAssetKeys)
+        
+        resourceLoaderDelegate.owner = self
+        
+        addObserver(self, forKeyPath: "status", options: NSKeyValueObservingOptions.new, context: nil)
+        
+        NotificationCenter.default.addObserver(self, selector: #selector(playbackStalledHandler), name:NSNotification.Name.AVPlayerItemPlaybackStalled, object: self)
     }
     
     deinit {
