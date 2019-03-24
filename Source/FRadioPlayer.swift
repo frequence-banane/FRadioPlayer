@@ -103,15 +103,6 @@ import Cache
     @objc optional func radioPlayer(_ player: FRadioPlayer, itemDidChange url: URL?)
     
     /**
-     Called when player item changes the timed metadata value, it uses (separatedBy: " - ") to get the artist/song name, if you want more control over the raw metadata, consider using `metadataDidChange rawValue` instead
-     
-     - parameter player: FRadioPlayer
-     - parameter artistName: The artist name
-     - parameter trackName: The track name
-     */
-    @objc optional func radioPlayer(_ player: FRadioPlayer, metadataDidChange artistName: String?, trackName: String?)
-    
-    /**
      Called when player item changes the timed metadata value
      
      - parameter player: FRadioPlayer
@@ -397,8 +388,6 @@ open class FRadioPlayer: NSObject, CachingPlayerItemDelegate {
     }
     
     private func timedMetadataDidChange(rawValue: String?) {
-        let parts = rawValue?.components(separatedBy: " - ")
-        delegate?.radioPlayer?(self, metadataDidChange: parts?.first, trackName: parts?.last)
         delegate?.radioPlayer?(self, metadataDidChange: rawValue)
         shouldGetArtwork(for: rawValue, enableArtwork)
     }
