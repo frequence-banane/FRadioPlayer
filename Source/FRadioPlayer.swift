@@ -71,13 +71,21 @@ import Cache
     }
 }
 
+public enum FRadioPlayerResource {
+    /// A live feed will not be cached
+    case liveFeed(URL)
+    
+    /// A static asset will be cached
+    case staticAsset(URL)
+}
+
 // MARK: - FRadioPlayerDelegate
 
 /**
  The `FRadioPlayerDelegate` protocol defines methods you can implement to respond to playback events associated with an `FRadioPlayer` object.
  */
 
-@objc public protocol FRadioPlayerDelegate: class {
+public protocol FRadioPlayerDelegate: class {
     /**
      Called when player changes state
      
@@ -100,7 +108,7 @@ import Cache
      - parameter player: FRadioPlayer
      - parameter url: Radio URL
      */
-    @objc optional func radioPlayer(_ player: FRadioPlayer, itemDidChange url: URL?)
+    func radioPlayer(_ player: FRadioPlayer, itemDidChange resource: FRadioPlayerResource?)
     
     /**
      Called when player item changes the timed metadata value
@@ -108,7 +116,7 @@ import Cache
      - parameter player: FRadioPlayer
      - parameter rawValue: metadata raw value
      */
-    @objc optional func radioPlayer(_ player: FRadioPlayer, metadataDidChange rawValue: String?)
+    func radioPlayer(_ player: FRadioPlayer, metadataDidChange rawValue: String?)
     
     /**
      Called when the player gets the artwork for the playing song
@@ -116,7 +124,15 @@ import Cache
      - parameter player: FRadioPlayer
      - parameter artworkURL: URL for the artwork from iTunes
      */
-    @objc optional func radioPlayer(_ player: FRadioPlayer, artworkDidChange artworkURL: URL?)
+    func radioPlayer(_ player: FRadioPlayer, artworkDidChange artworkURL: URL?)
+}
+
+public extension FRadioPlayerDelegate {
+    func radioPlayer(_ player: FRadioPlayer, itemDidChange resource: FRadioPlayerResource?) {}
+    
+    func radioPlayer(_ player: FRadioPlayer, metadataDidChange rawValue: String?) {}
+    
+    func radioPlayer(_ player: FRadioPlayer, artworkDidChange artworkURL: URL?) {}
 }
 
 // MARK: - FRadioPlayer
@@ -138,10 +154,10 @@ open class FRadioPlayer: NSObject, CachingPlayerItemDelegate {
      */
     open weak var delegate: FRadioPlayerDelegate?
     
-    /// The player current radio URL
-    open var radioURL: URL? {
+    /// The player current resource (to be played)
+    open var radioResource: FRadioPlayerResource? {
         didSet {
-            radioURLDidChange(with: radioURL)
+            radioResourceDidChange(with: radioResource)
         }
     }
     
@@ -309,20 +325,46 @@ open class FRadioPlayer: NSObject, CachingPlayerItemDelegate {
     
     // MARK: - Private helpers
     
-    private func radioURLDidChange(with url: URL?) {
+    private func radioResourceDidChange(with resource: FRadioPlayerResource?) {
         resetPlayer()
-        guard let url = url else { state = .urlNotSet; return }
         
-        state = .loading
+        guard let resource = resource else { state = .urlNotSet; return }
         
-        preparePlayer(with: AVURLAsset(url: url)) { (success, asset) in
-            guard success, let asset = asset else {
-                self.resetPlayer()
-                self.state = .error
-                return
+        func loadDistantData(url: URL) {
+            state = .loading
+            preparePlayer(with: AVURLAsset(url: url)) { (success, asset) in
+                guard success, let asset = asset else {
+                    self.resetPlayer()
+                    self.state = .error
+                    return
+                }
+                self.setupPlayer(with: asset)
             }
-            self.setupPlayer(with: asset)
         }
+        
+        switch resource {
+        case .staticAsset(let url):
+            storage?.async.entry(forKey: url.absoluteString, completion: { result in
+                switch result {
+                case .error: // The track is not cached.
+                    loadDistantData(url: url)
+                case .value(let entry): // The track is cached.
+                    self.setupPlayer(withLocal: entry.object, mimeType: "audio/mpeg", fileExtension: "mp3")
+                }
+            })
+            
+        case .liveFeed(let url):
+            loadDistantData(url: url)
+            
+        }
+    }
+    
+    private func setupPlayer(withLocal data: Data, mimeType: String, fileExtension: String) {
+        if player == nil {
+            player = AVPlayer()
+        }
+        
+        playerItem = CachingPlayerItem(data: data, mimeType: mimeType, fileExtension: fileExtension)
     }
     
     private func setupPlayer(with asset: AVURLAsset) {
@@ -357,7 +399,7 @@ open class FRadioPlayer: NSObject, CachingPlayerItemDelegate {
             if isAutoPlay { play() }
         }
         
-        delegate?.radioPlayer?(self, itemDidChange: radioURL)
+        delegate?.radioPlayer(self, itemDidChange: radioResource)
     }
     
     /** Prepare the player from the passed AVURLAsset
@@ -388,20 +430,20 @@ open class FRadioPlayer: NSObject, CachingPlayerItemDelegate {
     }
     
     private func timedMetadataDidChange(rawValue: String?) {
-        delegate?.radioPlayer?(self, metadataDidChange: rawValue)
+        delegate?.radioPlayer(self, metadataDidChange: rawValue)
         shouldGetArtwork(for: rawValue, enableArtwork)
     }
     
     private func shouldGetArtwork(for rawValue: String?, _ enabled: Bool) {
         guard enabled else { return }
         guard let rawValue = rawValue else {
-            self.delegate?.radioPlayer?(self, artworkDidChange: nil)
+            self.delegate?.radioPlayer(self, artworkDidChange: nil)
             return
         }
         
         FRadioAPI.getArtwork(for: rawValue, size: artworkSize, completionHandler: { [unowned self] artworlURL in
             DispatchQueue.main.async {
-                self.delegate?.radioPlayer?(self, artworkDidChange: artworlURL)
+                self.delegate?.radioPlayer(self, artworkDidChange: artworlURL)
             }
         })
     }
