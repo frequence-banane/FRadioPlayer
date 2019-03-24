@@ -29,11 +29,24 @@ fileprivate extension URL {
     
     /// Is called after initial prebuffering is finished, means
     /// we are ready to play.
-    @objc optional func playerItemReadyToPlay(_ playerItem: CachingPlayerItem)
+    @objc optional func playerItemStatusChanged(_ playerItem: CachingPlayerItem)
     
     /// Is called when the data being downloaded did not arrive in time to
     /// continue playback.
     @objc optional func playerItemPlaybackStalled(_ playerItem: CachingPlayerItem)
+    
+    /// Is called when the buffer has been totally read.
+    @objc optional func playerItemBufferEmpty(_ playerItem: CachingPlayerItem)
+    
+    /// Is called when likelihood of being able to keep playing without
+    /// interruption has changed.
+    @objc optional func playerItem(_ playerItem: CachingPlayerItem, isPlaybackLikelyToKeepUp: Bool)
+    
+    /// Is called when the timed metadata has been updated.
+    @objc optional func playerItemTimedMetadataUpdated(_ playerItem: CachingPlayerItem)
+    
+    /// Is called when the player item has reached the end of its asset.
+    @objc optional func playerItemDidPlayToEndTime(_ playerItem: CachingPlayerItem)
     
     /// Is called on downloading error.
     @objc optional func playerItem(_ playerItem: CachingPlayerItem, downloadingFailedWith error: Error)
@@ -221,9 +234,7 @@ open class CachingPlayerItem: AVPlayerItem {
         
         resourceLoaderDelegate.owner = self
         
-        addObserver(self, forKeyPath: "status", options: NSKeyValueObservingOptions.new, context: nil)
-        
-        NotificationCenter.default.addObserver(self, selector: #selector(playbackStalledHandler), name:NSNotification.Name.AVPlayerItemPlaybackStalled, object: self)
+        registerObservers()
         
     }
     
@@ -246,22 +257,64 @@ open class CachingPlayerItem: AVPlayerItem {
         super.init(asset: asset, automaticallyLoadedAssetKeys: nil)
         resourceLoaderDelegate.owner = self
         
-        addObserver(self, forKeyPath: "status", options: NSKeyValueObservingOptions.new, context: nil)
-        
-        NotificationCenter.default.addObserver(self, selector: #selector(playbackStalledHandler), name:NSNotification.Name.AVPlayerItemPlaybackStalled, object: self)
-        
+        registerObservers()
     }
     
     // MARK: KVO
     
+    func registerObservers() {
+        //
+        addObserver(self, forKeyPath: #keyPath(CachingPlayerItem.status), options: .new, context: nil)
+        addObserver(self, forKeyPath: #keyPath(CachingPlayerItem.isPlaybackBufferEmpty), options: .new, context: nil)
+        addObserver(self, forKeyPath: #keyPath(CachingPlayerItem.isPlaybackLikelyToKeepUp), options: .new, context: nil)
+        addObserver(self, forKeyPath: #keyPath(CachingPlayerItem.timedMetadata), options: .new, context: nil)
+        
+        NotificationCenter.default.addObserver(self, selector: #selector(playbackStalledHandler(notification:)), name:NSNotification.Name.AVPlayerItemPlaybackStalled, object: self)
+        NotificationCenter.default.addObserver(self, selector: #selector(playbackDidPlayToEndTime(notification:)), name:NSNotification.Name.AVPlayerItemDidPlayToEndTime, object: self)
+    }
+    
     override open func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
-        delegate?.playerItemReadyToPlay?(self)
+        
+        if let item = object as? AVPlayerItem, let keyPath = keyPath, item == self {
+            
+            switch keyPath {
+                
+            case #keyPath(CachingPlayerItem.status):
+                delegate?.playerItemStatusChanged?(self)
+                
+            case #keyPath(CachingPlayerItem.isPlaybackBufferEmpty):
+                delegate?.playerItemBufferEmpty?(self)
+                
+            case #keyPath(CachingPlayerItem.isPlaybackLikelyToKeepUp):
+                delegate?.playerItem?(self, isPlaybackLikelyToKeepUp: self.isPlaybackLikelyToKeepUp)
+                
+            case #keyPath(CachingPlayerItem.timedMetadata):
+                delegate?.playerItemTimedMetadataUpdated?(self)
+                
+            default:
+                break
+            }
+        }
     }
     
     // MARK: Notification hanlers
     
-    @objc func playbackStalledHandler() {
+    @objc func playbackStalledHandler(notification: Notification) {
+        guard let object = notification.userInfo,
+            let obj = object["object"] as? CachingPlayerItem,
+            obj == self
+            else { return }
+        
         delegate?.playerItemPlaybackStalled?(self)
+    }
+    
+    @objc func playbackDidPlayToEndTime(notification: Notification) {
+        guard let object = notification.userInfo,
+            let obj = object["object"] as? CachingPlayerItem,
+            obj == self
+            else { return }
+        
+        delegate?.playerItemDidPlayToEndTime?(self)
     }
     
     // MARK: -
@@ -289,14 +342,17 @@ open class CachingPlayerItem: AVPlayerItem {
         
         resourceLoaderDelegate.owner = self
         
-        addObserver(self, forKeyPath: "status", options: NSKeyValueObservingOptions.new, context: nil)
-        
-        NotificationCenter.default.addObserver(self, selector: #selector(playbackStalledHandler), name:NSNotification.Name.AVPlayerItemPlaybackStalled, object: self)
+        registerObservers()
     }
     
     deinit {
+        removeObserver(self, forKeyPath: #keyPath(CachingPlayerItem.status))
+        removeObserver(self, forKeyPath: #keyPath(CachingPlayerItem.isPlaybackBufferEmpty))
+        removeObserver(self, forKeyPath: #keyPath(CachingPlayerItem.isPlaybackLikelyToKeepUp))
+        removeObserver(self, forKeyPath: #keyPath(CachingPlayerItem.timedMetadata))
+        
         NotificationCenter.default.removeObserver(self)
-        removeObserver(self, forKeyPath: "status")
+        
         resourceLoaderDelegate.session?.invalidateAndCancel()
     }
     

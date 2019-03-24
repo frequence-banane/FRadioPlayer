@@ -134,7 +134,7 @@ import Cache
  FRadioPlayer is a wrapper around AVPlayer to handle internet radio playback.
  */
 
-open class FRadioPlayer: NSObject {
+open class FRadioPlayer: NSObject, CachingPlayerItemDelegate {
     
     // MARK: - Properties
     
@@ -202,7 +202,7 @@ open class FRadioPlayer: NSObject {
     private var player: AVPlayer?
     
     /// Last player item
-    private var lastPlayerItem: AVPlayerItem?
+    private var lastPlayerItem: CachingPlayerItem?
     
     /// Check for headphones, used to handle audio route change
     private var headphonesConnected: Bool = false
@@ -352,11 +352,7 @@ open class FRadioPlayer: NSObject {
         if let item = lastPlayerItem {
             pause()
             
-            NotificationCenter.default.removeObserver(self, name: NSNotification.Name.AVPlayerItemDidPlayToEndTime, object: item)
-            item.removeObserver(self, forKeyPath: "status")
-            item.removeObserver(self, forKeyPath: "playbackBufferEmpty")
-            item.removeObserver(self, forKeyPath: "playbackLikelyToKeepUp")
-            item.removeObserver(self, forKeyPath: "timedMetadata")
+            item.delegate = nil
         }
         
         lastPlayerItem = playerItem
@@ -364,10 +360,7 @@ open class FRadioPlayer: NSObject {
         
         if let item = playerItem {
             
-            item.addObserver(self, forKeyPath: "status", options: NSKeyValueObservingOptions.new, context: nil)
-            item.addObserver(self, forKeyPath: "playbackBufferEmpty", options: NSKeyValueObservingOptions.new, context: nil)
-            item.addObserver(self, forKeyPath: "playbackLikelyToKeepUp", options: NSKeyValueObservingOptions.new, context: nil)
-            item.addObserver(self, forKeyPath: "timedMetadata", options: NSKeyValueObservingOptions.new, context: nil)
+            item.delegate = self
             
             player?.replaceCurrentItem(with: item)
             if isAutoPlay { play() }
@@ -526,42 +519,67 @@ open class FRadioPlayer: NSObject {
         }
     }
     #endif
+    
     // MARK: - KVO
     
-    /// :nodoc:
-    override open func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
+    /// Is called when the media file is fully downloaded.
+    func playerItem(_ playerItem: CachingPlayerItem, didFinishDownloadingData data: Data) {
         
-        if let item = object as? AVPlayerItem, let keyPath = keyPath, item == self.playerItem {
-            
-            switch keyPath {
-                
-            case "status":
-                
-                if player?.status == AVPlayer.Status.readyToPlay {
-                    self.state = .readyToPlay
-                } else if player?.status == AVPlayer.Status.failed {
-                    self.state = .error
-                }
-                
-            case "playbackBufferEmpty":
-                
-                if item.isPlaybackBufferEmpty {
-                    self.state = .loading
-                    self.checkNetworkInterruption()
-                }
-                
-            case "playbackLikelyToKeepUp":
-                
-                self.state = item.isPlaybackLikelyToKeepUp ? .loadingFinished : .loading
-                
-            case "timedMetadata":
-                let rawValue = item.timedMetadata?.first?.value as? String
-                timedMetadataDidChange(rawValue: rawValue)
-                
-            default:
-                break
-            }
+    }
+    
+    /// Is called every time a new portion of data is received.
+    func playerItem(_ playerItem: CachingPlayerItem, didDownloadBytesSoFar bytesDownloaded: Int, outOf bytesExpected: Int) {
+        
+    }
+    
+    /// Is called after initial prebuffering is finished, means
+    /// we are ready to play.
+    func playerItemStatusChanged(_ playerItem: CachingPlayerItem) {
+        assert(playerItem == self.playerItem)
+        if playerItem.status == AVPlayerItem.Status.readyToPlay {
+            self.state = .readyToPlay
+        } else if playerItem.status == AVPlayerItem.Status.failed {
+            self.state = .error
         }
+    }
+    
+    /// Is called when the data being downloaded did not arrive in time to
+    /// continue playback.
+    func playerItemPlaybackStalled(_ playerItem: CachingPlayerItem) {
+        
+    }
+    
+    /// Is called when the buffer has been totally read.
+    func playerItemBufferEmpty(_ playerItem: CachingPlayerItem) {
+        assert(playerItem == self.playerItem)
+        if playerItem.isPlaybackBufferEmpty {
+            self.state = .loading
+            self.checkNetworkInterruption()
+        }
+    }
+    
+    /// Is called when likelihood of being able to keep playing without
+    /// interruption has changed.
+    func playerItem(_ playerItem: CachingPlayerItem, isPlaybackLikelyToKeepUp: Bool) {
+        assert(playerItem == self.playerItem)
+        self.state = isPlaybackLikelyToKeepUp ? .loadingFinished : .loading
+    }
+    
+    /// Is called when the timed metadata has been updated.
+    func playerItemTimedMetadataUpdated(_ playerItem: CachingPlayerItem) {
+        assert(playerItem == self.playerItem)
+        let rawValue = playerItem.timedMetadata?.first?.value as? String
+        timedMetadataDidChange(rawValue: rawValue)
+    }
+    
+    /// Is called when the player item has reached the end of its asset.
+    func playerItemDidPlayToEndTime(_ playerItem: CachingPlayerItem) {
+        
+    }
+    
+    /// Is called on downloading error.
+    func playerItem(_ playerItem: CachingPlayerItem, downloadingFailedWith error: Error) {
+        
     }
 }
 
